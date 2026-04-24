@@ -13,6 +13,8 @@ enum CommandEntry {
         target: String,
         #[serde(default)]
         env: HashMap<String, String>,
+        #[serde(default)]
+        paths: Vec<String>,
     },
 }
 
@@ -30,12 +32,21 @@ impl CommandEntry {
             CommandEntry::Detailed { env, .. } => Some(env),
         }
     }
+
+    fn paths(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Detailed { paths, .. } => paths,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
 struct Config {
     #[serde(default)]
     global_env: HashMap<String, String>,
+    #[serde(default)]
+    global_paths: Vec<String>,
     commands: HashMap<String, CommandEntry>,
 }
 
@@ -95,6 +106,26 @@ fn main() {
     let mut command = Command::new(entry.target());
     command.args(&args);
 
+    // Handle PATH specially
+    let mut extra_paths = config.global_paths.clone();
+    extra_paths.extend(entry.paths().to_vec());
+
+    if !extra_paths.is_empty() {
+        if let Some(existing_path) = env::var_os("PATH") {
+            let mut paths = env::split_paths(&existing_path).collect::<Vec<_>>();
+            for p in extra_paths {
+                paths.push(std::path::PathBuf::from(p));
+            }
+            if let Ok(new_path) = env::join_paths(paths) {
+                command.env("PATH", new_path);
+            }
+        } else {
+            if let Ok(new_path) = env::join_paths(extra_paths) {
+                command.env("PATH", new_path);
+            }
+        }
+    }
+
     // Apply global env
     for (key, value) in &config.global_env {
         command.env(key, value);
@@ -140,21 +171,25 @@ mod tests {
     fn test_deserialize_config() {
         let toml_str = r#"
             global_env = { "GLOBAL" = "1" }
+            global_paths = ["/global/bin"]
 
             [commands]
             ls = "ls -la"
-            git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" } }
+            git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" }, paths = ["/git/bin"] }
         "#;
 
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.global_env.get("GLOBAL").unwrap(), "1");
+        assert_eq!(config.global_paths, vec!["/global/bin"]);
         
         let ls = config.commands.get("ls").unwrap();
         assert_eq!(ls.target(), "ls -la");
         assert!(ls.env().is_none());
+        assert!(ls.paths().is_empty());
 
         let git = config.commands.get("git").unwrap();
         assert_eq!(git.target(), "git");
         assert_eq!(git.env().unwrap().get("GIT_AUTHOR_NAME").unwrap(), "Dory");
+        assert_eq!(git.paths(), vec!["/git/bin"]);
     }
 }

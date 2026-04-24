@@ -12,9 +12,12 @@ enum CommandEntry {
     Detailed {
         target: String,
         #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
         env: HashMap<String, String>,
         #[serde(default)]
         paths: Vec<String>,
+        cwd: Option<String>,
     },
 }
 
@@ -23,6 +26,13 @@ impl CommandEntry {
         match self {
             CommandEntry::Simple(t) => t,
             CommandEntry::Detailed { target, .. } => target,
+        }
+    }
+
+    fn args(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Detailed { args, .. } => args,
         }
     }
 
@@ -37,6 +47,13 @@ impl CommandEntry {
         match self {
             CommandEntry::Simple(_) => &[],
             CommandEntry::Detailed { paths, .. } => paths,
+        }
+    }
+
+    fn cwd(&self) -> Option<&str> {
+        match self {
+            CommandEntry::Simple(_) => None,
+            CommandEntry::Detailed { cwd, .. } => cwd.as_deref(),
         }
     }
 }
@@ -104,7 +121,17 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     let mut command = Command::new(entry.target());
+    
+    // Apply pre-defined args from config
+    command.args(entry.args());
+    
+    // Apply args from command line
     command.args(&args);
+
+    // Set working directory if specified
+    if let Some(cwd) = entry.cwd() {
+        command.current_dir(cwd);
+    }
 
     // Handle PATH specially
     let mut extra_paths = config.global_paths.clone();
@@ -175,6 +202,7 @@ mod tests {
 
             [commands]
             ls = "ls -la"
+            curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "/tmp" }
             git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" }, paths = ["/git/bin"] }
         "#;
 
@@ -184,12 +212,18 @@ mod tests {
         
         let ls = config.commands.get("ls").unwrap();
         assert_eq!(ls.target(), "ls -la");
-        assert!(ls.env().is_none());
-        assert!(ls.paths().is_empty());
+        assert!(ls.args().is_empty());
+
+        let curl = config.commands.get("curl").unwrap();
+        assert_eq!(curl.target(), "curl");
+        assert_eq!(curl.args(), vec!["-k", "-s"]);
+        assert_eq!(curl.env().unwrap().get("USER").unwrap(), "dory");
+        assert_eq!(curl.cwd().unwrap(), "/tmp");
 
         let git = config.commands.get("git").unwrap();
         assert_eq!(git.target(), "git");
         assert_eq!(git.env().unwrap().get("GIT_AUTHOR_NAME").unwrap(), "Dory");
         assert_eq!(git.paths(), vec!["/git/bin"]);
+        assert!(git.cwd().is_none());
     }
 }

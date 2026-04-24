@@ -1,6 +1,6 @@
 # Dory
 
-A command wrapper that maps executable names to target commands with environment variable and PATH support.
+A command wrapper that maps executable names to target commands with environment variable, PATH, default arguments, and working directory support.
 
 ## Configuration
 
@@ -30,16 +30,20 @@ global_paths = [
 # Simple mapping: executable_name = "target_command"
 ls = "ls -la"
 
-# Detailed mapping with environment variables and custom PATH entries
+# Detailed mapping with working directory, arguments, and environment variables
+curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "C:/temp" }
+
+# Example: git with specific author and extra bin path
 git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" }, paths = ["C:/git-extra/bin"] }
 
-# Another example: Adding node_modules/.bin to PATH for a specific command
-build = { target = "npm", paths = ["./node_modules/.bin"] }
+# Example: Run build in a specific directory
+build = { target = "npm", args = ["run", "dev"], cwd = "./frontend" }
 ```
 
 ### How it works
 
-1. Rename or symlink the `dory` executable to the name you want to wrap (e.g., `git.exe` or `build.exe`).
-2. When you run `build.exe`, Dory looks up `build` in the `commands` section of the config.
-3. It appends the specified `paths` to the existing `PATH` environment variable.
-4. It sets the specified environment variables and executes the target command with any additional arguments you provided.
+1. Rename or symlink the `dory` executable to the name you want to wrap (e.g., `curl.exe` or `build.exe`).
+2. When you run `curl.exe https://google.com`, Dory looks up `curl` in the `commands` section of the config.
+3. It sets the working directory to `cwd` if specified.
+4. It sets the specified environment variables and appends the `paths` to `PATH`.
+5. It executes the target command `curl` with the default `args` followed by your command-line arguments.

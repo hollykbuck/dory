@@ -72,9 +72,26 @@ impl Config {
     fn normalize(&mut self) {
         let mut new_commands = HashMap::with_capacity(self.commands.len());
         for (name, entry) in self.commands.drain() {
-            new_commands.insert(name.to_lowercase(), entry);
+            new_commands.insert(normalize_command_name(&name), entry);
         }
         self.commands = new_commands;
+    }
+}
+
+fn normalize_command_name(name: &str) -> String {
+    let normalized = name.to_lowercase();
+
+    #[cfg(windows)]
+    {
+        normalized
+            .strip_suffix(".exe")
+            .unwrap_or(&normalized)
+            .to_string()
+    }
+
+    #[cfg(not(windows))]
+    {
+        normalized
     }
 }
 
@@ -162,7 +179,7 @@ fn main() {
 
     config.normalize();
 
-    let cmd_name = cmd_name_raw.to_lowercase();
+    let cmd_name = normalize_command_name(&cmd_name_raw);
     let entry = config.commands.get(&cmd_name).cloned().unwrap_or_else(|| {
         eprintln!("No command mapping for '{}' in configuration.", cmd_name_raw);
         exit(127);
@@ -261,5 +278,22 @@ mod tests {
         assert!(config.commands.contains_key("ls"));
         assert!(config.commands.contains_key("curl"));
         assert!(!config.commands.contains_key("LS"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_normalize_command_name_ignores_windows_exe_suffix() {
+        assert_eq!(normalize_command_name("vim"), "vim");
+        assert_eq!(normalize_command_name("vim.exe"), "vim");
+        assert_eq!(normalize_command_name("vim.EXE"), "vim");
+        assert_eq!(normalize_command_name("vim.exe.exe"), "vim.exe");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_normalize_command_name_keeps_exe_suffix_on_non_windows() {
+        assert_eq!(normalize_command_name("vim"), "vim");
+        assert_eq!(normalize_command_name("vim.exe"), "vim.exe");
+        assert_eq!(normalize_command_name("vim.EXE"), "vim.exe");
     }
 }

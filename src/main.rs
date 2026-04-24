@@ -95,6 +95,29 @@ fn normalize_command_name(name: &str) -> String {
     }
 }
 
+fn is_help_arg(arg: &str) -> bool {
+    matches!(arg, "-h" | "--help")
+}
+
+fn print_help() {
+    println!(
+        r#"dory - command wrapper
+
+Usage:
+  dory -h|--help
+  <wrapped-command> [args...]
+
+Configuration:
+  Dory maps the executable name used to invoke it to an entry under [commands].
+  On Windows, a trailing .exe suffix is ignored for command lookup.
+
+Config search order:
+  1. dory.toml
+  2. .dory.toml
+  3. user config directory: dory/config.toml"#
+    );
+}
+
 fn load_config() -> Option<Config> {
     let mut config_data: Option<String> = None;
     let mut config_path: Option<String> = None;
@@ -170,6 +193,13 @@ fn main() {
         .unwrap()
         .to_string_lossy()
         .to_string();
+    let cmd_name = normalize_command_name(&cmd_name_raw);
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    if cmd_name == "dory" && args.iter().any(|arg| is_help_arg(arg)) {
+        print_help();
+        exit(0);
+    }
 
     let mut config = load_config().unwrap_or_else(|| {
         eprintln!("Configuration not found or failed to load.");
@@ -179,13 +209,10 @@ fn main() {
 
     config.normalize();
 
-    let cmd_name = normalize_command_name(&cmd_name_raw);
     let entry = config.commands.get(&cmd_name).cloned().unwrap_or_else(|| {
         eprintln!("No command mapping for '{}' in configuration.", cmd_name_raw);
         exit(127);
     });
-
-    let args: Vec<String> = env::args().skip(1).collect();
 
     let mut command = Command::new(entry.target());
     
@@ -295,5 +322,13 @@ mod tests {
         assert_eq!(normalize_command_name("vim"), "vim");
         assert_eq!(normalize_command_name("vim.exe"), "vim.exe");
         assert_eq!(normalize_command_name("vim.EXE"), "vim.exe");
+    }
+
+    #[test]
+    fn test_is_help_arg() {
+        assert!(is_help_arg("-h"));
+        assert!(is_help_arg("--help"));
+        assert!(!is_help_arg("-help"));
+        assert!(!is_help_arg("help"));
     }
 }

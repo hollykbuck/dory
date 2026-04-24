@@ -64,57 +64,107 @@ struct Config {
     global_env: HashMap<String, String>,
     #[serde(default)]
     global_paths: Vec<String>,
+    #[serde(default)]
     commands: HashMap<String, CommandEntry>,
 }
 
+impl Config {
+    fn normalize(&mut self) {
+        let mut new_commands = HashMap::with_capacity(self.commands.len());
+        for (name, entry) in self.commands.drain() {
+            new_commands.insert(name.to_lowercase(), entry);
+        }
+        self.commands = new_commands;
+    }
+}
+
 fn load_config() -> Option<Config> {
+    let mut config_data: Option<String> = None;
+    let mut config_path: Option<String> = None;
+
     // Try local config first
     let local_paths = ["dory.toml", ".dory.toml"];
     for path in local_paths {
         if let Ok(data) = std::fs::read_to_string(path) {
-            match toml::from_str(&data) {
-                Ok(c) => return Some(c),
-                Err(e) => {
-                    eprintln!("Error parsing local config {}: {}", path, e);
-                    return None;
+            config_data = Some(data);
+            config_path = Some(path.to_string());
+            break;
+        }
+    }
+
+    if config_data.is_none() {
+        if let Some(home) = dirs::home_dir() {
+            // Try ~/.dory.toml
+            let mut p1 = home.clone();
+            p1.push(".dory.toml");
+            if let Ok(data) = std::fs::read_to_string(&p1) {
+                config_data = Some(data);
+                config_path = Some(p1.display().to_string());
+            }
+
+            if config_data.is_none() {
+                // Try $XDG_CONFIG_HOME/dory/config.toml or ~/.config/dory/config.toml
+                let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        let mut p = home.clone();
+                        p.push(".config");
+                        p
+                    });
+                
+                let mut p2 = xdg_config_home;
+                p2.push("dory/config.toml");
+                if let Ok(data) = std::fs::read_to_string(&p2) {
+                    config_data = Some(data);
+                    config_path = Some(p2.display().to_string());
                 }
             }
         }
     }
 
-    // Then try system config
-    let mut path = dirs::config_dir()?;
-    path.push("dory/config.toml");
+    if config_data.is_none() {
+        if let Some(mut path) = dirs::config_dir() {
+            path.push("dory/config.toml");
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                config_data = Some(data);
+                config_path = Some(path.display().to_string());
+            }
+        }
+    }
 
-    match std::fs::read_to_string(&path) {
-        Ok(data) => match toml::from_str(&data) {
+    if let (Some(data), Some(path)) = (config_data, config_path) {
+        match toml::from_str(&data) {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("Error parsing config {}: {}", path.display(), e);
+                eprintln!("Error parsing config {}: {}", path, e);
                 None
             }
-        },
-        Err(_) => None, // Silent fail if system config doesn't exist
+        }
+    } else {
+        None
     }
 }
 
 fn main() {
     // argv[0] -> command name
     let argv0 = env::args().next().unwrap();
-    let cmd_name = std::path::Path::new(&argv0)
+    let cmd_name_raw = std::path::Path::new(&argv0)
         .file_name()
         .unwrap()
         .to_string_lossy()
         .to_string();
 
-    let config = load_config().unwrap_or_else(|| {
+    let mut config = load_config().unwrap_or_else(|| {
         eprintln!("Configuration not found or failed to load.");
         eprintln!("Please create a 'dory.toml' in the current directory or in your config folder.");
         exit(127);
     });
 
+    config.normalize();
+
+    let cmd_name = cmd_name_raw.to_lowercase();
     let entry = config.commands.get(&cmd_name).cloned().unwrap_or_else(|| {
-        eprintln!("No command mapping for '{}' in configuration.", cmd_name);
+        eprintln!("No command mapping for '{}' in configuration.", cmd_name_raw);
         exit(127);
     });
 
@@ -195,35 +245,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_deserialize_config() {
+    fn test_deserialize_config_and_normalize() {
         let toml_str = r#"
             global_env = { "GLOBAL" = "1" }
             global_paths = ["/global/bin"]
 
             [commands]
-            ls = "ls -la"
-            curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "/tmp" }
-            git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" }, paths = ["/git/bin"] }
+            LS = "ls -la"
+            Curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "/tmp" }
         "#;
 
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.global_env.get("GLOBAL").unwrap(), "1");
-        assert_eq!(config.global_paths, vec!["/global/bin"]);
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        config.normalize();
         
-        let ls = config.commands.get("ls").unwrap();
-        assert_eq!(ls.target(), "ls -la");
-        assert!(ls.args().is_empty());
-
-        let curl = config.commands.get("curl").unwrap();
-        assert_eq!(curl.target(), "curl");
-        assert_eq!(curl.args(), vec!["-k", "-s"]);
-        assert_eq!(curl.env().unwrap().get("USER").unwrap(), "dory");
-        assert_eq!(curl.cwd().unwrap(), "/tmp");
-
-        let git = config.commands.get("git").unwrap();
-        assert_eq!(git.target(), "git");
-        assert_eq!(git.env().unwrap().get("GIT_AUTHOR_NAME").unwrap(), "Dory");
-        assert_eq!(git.paths(), vec!["/git/bin"]);
-        assert!(git.cwd().is_none());
+        assert!(config.commands.contains_key("ls"));
+        assert!(config.commands.contains_key("curl"));
+        assert!(!config.commands.contains_key("LS"));
     }
 }

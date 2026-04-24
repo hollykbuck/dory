@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::env;
+use std::path::PathBuf;
 use std::process::{Command, exit};
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 use serde::Deserialize;
 
@@ -112,63 +113,32 @@ Configuration:
   On Windows, a trailing .exe suffix is ignored for command lookup.
 
 Config search order:
-  1. dory.toml
-  2. .dory.toml
-  3. user config directory: dory/config.toml"#
+  1. user config directory: dory/config.toml
+
+Local dory.toml, .dory.toml, and ~/.dory.toml files are not trusted by default."#
     );
+}
+
+fn trusted_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(mut config_dir) = dirs::config_dir() {
+        config_dir.push("dory/config.toml");
+        paths.push(config_dir);
+    }
+
+    paths
 }
 
 fn load_config() -> Option<Config> {
     let mut config_data: Option<String> = None;
     let mut config_path: Option<String> = None;
 
-    // Try local config first
-    let local_paths = ["dory.toml", ".dory.toml"];
-    for path in local_paths {
-        if let Ok(data) = std::fs::read_to_string(path) {
+    for path in trusted_config_paths() {
+        if let Ok(data) = std::fs::read_to_string(&path) {
             config_data = Some(data);
-            config_path = Some(path.to_string());
+            config_path = Some(path.display().to_string());
             break;
-        }
-    }
-
-    if config_data.is_none() {
-        if let Some(home) = dirs::home_dir() {
-            // Try ~/.dory.toml
-            let mut p1 = home.clone();
-            p1.push(".dory.toml");
-            if let Ok(data) = std::fs::read_to_string(&p1) {
-                config_data = Some(data);
-                config_path = Some(p1.display().to_string());
-            }
-
-            if config_data.is_none() {
-                // Try $XDG_CONFIG_HOME/dory/config.toml or ~/.config/dory/config.toml
-                let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        let mut p = home.clone();
-                        p.push(".config");
-                        p
-                    });
-                
-                let mut p2 = xdg_config_home;
-                p2.push("dory/config.toml");
-                if let Ok(data) = std::fs::read_to_string(&p2) {
-                    config_data = Some(data);
-                    config_path = Some(p2.display().to_string());
-                }
-            }
-        }
-    }
-
-    if config_data.is_none() {
-        if let Some(mut path) = dirs::config_dir() {
-            path.push("dory/config.toml");
-            if let Ok(data) = std::fs::read_to_string(&path) {
-                config_data = Some(data);
-                config_path = Some(path.display().to_string());
-            }
         }
     }
 
@@ -203,22 +173,25 @@ fn main() {
 
     let mut config = load_config().unwrap_or_else(|| {
         eprintln!("Configuration not found or failed to load.");
-        eprintln!("Please create a 'dory.toml' in the current directory or in your config folder.");
+        eprintln!("Please create 'dory/config.toml' in your user config folder.");
         exit(127);
     });
 
     config.normalize();
 
     let entry = config.commands.get(&cmd_name).cloned().unwrap_or_else(|| {
-        eprintln!("No command mapping for '{}' in configuration.", cmd_name_raw);
+        eprintln!(
+            "No command mapping for '{}' in configuration.",
+            cmd_name_raw
+        );
         exit(127);
     });
 
     let mut command = Command::new(entry.target());
-    
+
     // Apply pre-defined args from config
     command.args(entry.args());
-    
+
     // Apply args from command line
     command.args(&args);
 
@@ -270,7 +243,8 @@ fn main() {
         if let Some(ref mut ch) = *handler_child.lock().unwrap() {
             let _ = ch.kill();
         }
-    }).expect("failed to install ctrlc handler");
+    })
+    .expect("failed to install ctrlc handler");
 
     let status = {
         let mut guard = child_arc.lock().unwrap();
@@ -301,7 +275,7 @@ mod tests {
 
         let mut config: Config = toml::from_str(toml_str).unwrap();
         config.normalize();
-        
+
         assert!(config.commands.contains_key("ls"));
         assert!(config.commands.contains_key("curl"));
         assert!(!config.commands.contains_key("LS"));
@@ -330,5 +304,16 @@ mod tests {
         assert!(is_help_arg("--help"));
         assert!(!is_help_arg("-help"));
         assert!(!is_help_arg("help"));
+    }
+
+    #[test]
+    fn test_trusted_config_paths_do_not_include_local_configs() {
+        let paths = trusted_config_paths();
+
+        assert!(!paths.contains(&PathBuf::from("dory.toml")));
+        assert!(!paths.contains(&PathBuf::from(".dory.toml")));
+        assert!(!paths.contains(&PathBuf::from("~/.dory.toml")));
+        assert!(!paths.iter().any(|path| path.ends_with(".dory.toml")));
+        assert!(paths.iter().all(|path| path.is_absolute()));
     }
 }

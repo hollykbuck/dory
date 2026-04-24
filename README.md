@@ -4,12 +4,11 @@ A command wrapper that maps executable names to target commands with environment
 
 ## Configuration
 
-Dory searches for a configuration file in the following order:
-1. `dory.toml` (in the current directory)
-2. `.dory.toml` (in the current directory)
-3. System config folder:
+Dory only trusts the user config folder by default:
    - **Windows:** `%AppData%\dory\config.toml`
    - **Linux/macOS:** `$XDG_CONFIG_HOME/dory/config.toml` or `~/.config/dory/config.toml`
+
+Local `dory.toml`, `.dory.toml`, and `~/.dory.toml` files are not loaded by default.
 
 ### Format
 

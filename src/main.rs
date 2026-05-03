@@ -213,10 +213,8 @@ fn main() {
             if let Ok(new_path) = env::join_paths(paths) {
                 command.env("PATH", new_path);
             }
-        } else {
-            if let Ok(new_path) = env::join_paths(extra_paths) {
-                command.env("PATH", new_path);
-            }
+        } else if let Ok(new_path) = env::join_paths(extra_paths) {
+            command.env("PATH", new_path);
         }
     }
 

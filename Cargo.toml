@@ -8,3 +8,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 dirs = "6"
 ctrlc = "3"
+
+[build-dependencies]
+vergen = { version = "9", features = ["build"] }
+vergen-gitcl = { version = "9" }

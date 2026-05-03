@@ -100,12 +100,23 @@ fn is_help_arg(arg: &str) -> bool {
     matches!(arg, "-h" | "--help")
 }
 
+fn is_version_arg(arg: &str) -> bool {
+    matches!(arg, "-v" | "--version")
+}
+
+fn print_version() {
+    println!("dory v{}", env!("CARGO_PKG_VERSION"));
+    println!("Commit: {}", env!("VERGEN_GIT_SHA"));
+    println!("Build Date: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+}
+
 fn print_help() {
     println!(
-        r#"dory - command wrapper
+        r#"dory v{} - command wrapper (Commit: {})
 
 Usage:
   dory -h|--help
+  dory -v|--version
   <wrapped-command> [args...]
 
 Configuration:
@@ -115,7 +126,9 @@ Configuration:
 Config search order:
   1. user config directory: dory/config.toml
 
-Local dory.toml, .dory.toml, and ~/.dory.toml files are not trusted by default."#
+Local dory.toml, .dory.toml, and ~/.dory.toml files are not trusted by default."#,
+        env!("CARGO_PKG_VERSION"),
+        env!("VERGEN_GIT_SHA")
     );
 }
 
@@ -166,9 +179,15 @@ fn main() {
     let cmd_name = normalize_command_name(&cmd_name_raw);
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if cmd_name == "dory" && args.iter().any(|arg| is_help_arg(arg)) {
-        print_help();
-        exit(0);
+    if cmd_name == "dory" {
+        if args.iter().any(|arg| is_help_arg(arg)) {
+            print_help();
+            exit(0);
+        }
+        if args.iter().any(|arg| is_version_arg(arg)) {
+            print_version();
+            exit(0);
+        }
     }
 
     let mut config = load_config().unwrap_or_else(|| {

@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "dory"
-version = "0.3.0"
+version = "0.3.3"
 dependencies = [
  "ctrlc",
  "dirs",

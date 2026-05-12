@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(untagged)]
 enum CommandEntry {
@@ -14,6 +17,8 @@ enum CommandEntry {
         target: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
+        raw: bool,
         #[serde(default)]
         env: HashMap<String, String>,
         #[serde(default)]
@@ -34,6 +39,13 @@ impl CommandEntry {
         match self {
             CommandEntry::Simple(_) => &[],
             CommandEntry::Detailed { args, .. } => args,
+        }
+    }
+
+    fn raw(&self) -> bool {
+        match self {
+            CommandEntry::Simple(_) => false,
+            CommandEntry::Detailed { raw, .. } => *raw,
         }
     }
 
@@ -168,6 +180,67 @@ fn load_config() -> Option<Config> {
     }
 }
 
+#[cfg(windows)]
+fn is_cmd_script(target: &str) -> bool {
+    std::path::Path::new(target)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "cmd" | "bat"))
+}
+
+#[cfg(windows)]
+fn quote_for_cmd(arg: &str) -> String {
+    if arg.is_empty() || arg.chars().any(|c| c.is_whitespace()) {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    } else {
+        arg.to_string()
+    }
+}
+
+#[cfg(windows)]
+fn windows_cmd_call(entry: &CommandEntry, cli_args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(entry.args().len() + cli_args.len() + 2);
+    parts.push("call".to_string());
+    parts.push(quote_for_cmd(entry.target()));
+    parts.extend(entry.args().iter().map(|arg| quote_for_cmd(arg)));
+    parts.extend(cli_args.iter().map(|arg| quote_for_cmd(arg)));
+    parts.join(" ")
+}
+
+#[cfg(windows)]
+fn raw_command_tail(entry: &CommandEntry, cli_args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(entry.args().len() + cli_args.len());
+    parts.extend(entry.args().iter().cloned());
+    parts.extend(cli_args.iter().cloned());
+    parts.join(" ")
+}
+
+fn build_command(entry: &CommandEntry, cli_args: &[String]) -> Command {
+    #[cfg(windows)]
+    if entry.raw() {
+        let mut command = Command::new(entry.target());
+        let tail = raw_command_tail(entry, cli_args);
+        if !tail.is_empty() {
+            command.raw_arg(format!(" {}", tail));
+        }
+        return command;
+    }
+
+    #[cfg(windows)]
+    if is_cmd_script(entry.target()) {
+        let mut command = Command::new("C:\\Windows\\System32\\cmd.exe");
+        command.arg("/d");
+        command.arg("/c");
+        command.raw_arg(format!(" {}", windows_cmd_call(entry, cli_args)));
+        return command;
+    }
+
+    let mut command = Command::new(entry.target());
+    command.args(entry.args());
+    command.args(cli_args);
+    command
+}
+
 fn main() {
     // argv[0] -> command name
     let argv0 = env::args().next().unwrap();
@@ -206,13 +279,7 @@ fn main() {
         exit(127);
     });
 
-    let mut command = Command::new(entry.target());
-
-    // Apply pre-defined args from config
-    command.args(entry.args());
-
-    // Apply args from command line
-    command.args(&args);
+    let mut command = build_command(&entry, &args);
 
     // Set working directory if specified
     if let Some(cwd) = entry.cwd() {
@@ -278,6 +345,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt;
+    #[cfg(windows)]
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_deserialize_config_and_normalize() {
@@ -287,7 +358,7 @@ mod tests {
 
             [commands]
             LS = "ls -la"
-            Curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "/tmp" }
+            Curl = { target = "curl", args = ["-k", "-s"], raw = true, env = { "USER" = "dory" }, cwd = "/tmp" }
         "#;
 
         let mut config: Config = toml::from_str(toml_str).unwrap();
@@ -296,6 +367,7 @@ mod tests {
         assert!(config.commands.contains_key("ls"));
         assert!(config.commands.contains_key("curl"));
         assert!(!config.commands.contains_key("LS"));
+        assert!(config.commands["curl"].raw());
     }
 
     #[test]
@@ -321,6 +393,162 @@ mod tests {
         assert!(is_help_arg("--help"));
         assert!(!is_help_arg("-help"));
         assert!(!is_help_arg("help"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_is_cmd_script() {
+        assert!(is_cmd_script("code.cmd"));
+        assert!(is_cmd_script("C:/tools/build.BAT"));
+        assert!(!is_cmd_script("code.exe"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_windows_cmd_call_wraps_cmd_scripts_with_call() {
+        let entry = CommandEntry::Detailed {
+            target: "C:/Users/dingle/AppData/Local/Programs/Microsoft VS Code/bin/code.cmd"
+                .to_string(),
+            args: vec!["--reuse-window".to_string()],
+            raw: false,
+            env: HashMap::new(),
+            paths: Vec::new(),
+            cwd: None,
+        };
+        let cli_args = vec!["--version".to_string()];
+        assert_eq!(
+            windows_cmd_call(&entry, &cli_args),
+            "call \"C:/Users/dingle/AppData/Local/Programs/Microsoft VS Code/bin/code.cmd\" --reuse-window --version"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_cmd_c_needs_cmd_level_quoting_for_batch_paths_with_spaces() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = env::temp_dir().join(format!("dory cmd spacing {nonce}"));
+        std::fs::create_dir_all(&base).unwrap();
+
+        let script = base.join("echo argv.cmd");
+        std::fs::write(
+            &script,
+            "@echo off\r\necho SCRIPT:%~f0\r\necho ARG1:%1\r\n",
+        )
+        .unwrap();
+
+        let split_args = Command::new("C:\\Windows\\System32\\cmd.exe")
+            .arg("/d")
+            .arg("/c")
+            .arg(script.as_os_str())
+            .arg("hello")
+            .output()
+            .unwrap();
+
+        assert!(split_args.status.success());
+        let split_stdout = String::from_utf8_lossy(&split_args.stdout);
+        assert!(split_stdout.contains("SCRIPT:"));
+        assert!(split_stdout.contains("ARG1:hello"));
+
+        let quoted_as_normal_arg = Command::new("C:\\Windows\\System32\\cmd.exe")
+            .arg("/d")
+            .arg("/c")
+            .arg(format!("\"{}\" hello", script.display()))
+            .output()
+            .unwrap();
+
+        assert!(!quoted_as_normal_arg.status.success());
+        let quoted_as_normal_arg_stderr = String::from_utf8_lossy(&quoted_as_normal_arg.stderr);
+        assert!(quoted_as_normal_arg_stderr.contains("is not recognized"));
+        assert!(quoted_as_normal_arg_stderr.contains("\\\""));
+
+        let quoted_as_raw_arg = Command::new("C:\\Windows\\System32\\cmd.exe")
+            .arg("/d")
+            .arg("/c")
+            .raw_arg(format!(" \"{}\" hello", script.display()))
+            .output()
+            .unwrap();
+
+        assert!(quoted_as_raw_arg.status.success());
+        let quoted_as_raw_arg_stdout = String::from_utf8_lossy(&quoted_as_raw_arg.stdout);
+        assert!(quoted_as_raw_arg_stdout.contains("SCRIPT:"));
+        assert!(quoted_as_raw_arg_stdout.contains("ARG1:hello"));
+
+        let quoted_with_call = Command::new("C:\\Windows\\System32\\cmd.exe")
+            .arg("/d")
+            .arg("/c")
+            .raw_arg(format!(" call \"{}\" hello", script.display()))
+            .output()
+            .unwrap();
+
+        assert!(quoted_with_call.status.success());
+        let stdout = String::from_utf8_lossy(&quoted_with_call.stdout);
+        assert!(stdout.contains("SCRIPT:"));
+        assert!(stdout.contains("ARG1:hello"));
+
+        let _ = std::fs::remove_file(script);
+        let _ = std::fs::remove_dir(base);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_raw_command_tail_preserves_user_supplied_fragments() {
+        let entry = CommandEntry::Detailed {
+            target: "C:/Windows/System32/cmd.exe".to_string(),
+            args: vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                "\"C:\\Program Files\\Tool\\tool.cmd\"".to_string(),
+            ],
+            raw: true,
+            env: HashMap::new(),
+            paths: Vec::new(),
+            cwd: None,
+        };
+        let cli_args = vec!["--flag".to_string(), "\"value with spaces\"".to_string()];
+
+        assert_eq!(
+            raw_command_tail(&entry, &cli_args),
+            "/d /c \"C:\\Program Files\\Tool\\tool.cmd\" --flag \"value with spaces\""
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_raw_mode_executes_cmd_with_user_supplied_quoting() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = env::temp_dir().join(format!("dory raw mode {nonce}"));
+        std::fs::create_dir_all(&base).unwrap();
+
+        let script = base.join("print args.cmd");
+        std::fs::write(&script, "@echo off\r\necho ARG1:%1\r\n").unwrap();
+
+        let entry = CommandEntry::Detailed {
+            target: "C:\\Windows\\System32\\cmd.exe".to_string(),
+            args: vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                format!("\"{}\"", script.display()),
+            ],
+            raw: true,
+            env: HashMap::new(),
+            paths: Vec::new(),
+            cwd: None,
+        };
+        let cli_args = vec!["hello".to_string()];
+        let output = build_command(&entry, &cli_args).output().unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("ARG1:hello"));
+
+        let _ = std::fs::remove_file(script);
+        let _ = std::fs::remove_dir(base);
     }
 
     #[test]

@@ -32,6 +32,9 @@ ls = "ls -la"
 # Detailed mapping with working directory, arguments, and environment variables
 curl = { target = "curl", args = ["-k", "-s"], env = { "USER" = "dory" }, cwd = "C:/temp" }
 
+# Example: pass arguments as raw command-line fragments on Windows
+code = { target = "C:/Windows/System32/cmd.exe", raw = true, args = ["/c", "\"C:/Program Files/Microsoft VS Code/bin/code.cmd\""] }
+
 # Example: git with specific author and extra bin path
 git = { target = "git", env = { "GIT_AUTHOR_NAME" = "Dory" }, paths = ["C:/git-extra/bin"] }
 
@@ -46,3 +49,5 @@ build = { target = "npm", args = ["run", "dev"], cwd = "./frontend" }
 3. It sets the working directory to `cwd` if specified.
 4. It sets the specified environment variables and appends the `paths` to `PATH`.
 5. It executes the target command `curl` with the default `args` followed by your command-line arguments.
+
+On Windows, set `raw = true` when you want Dory to concatenate `args` and command-line arguments as raw command-line fragments without applying Rust's normal argument quoting.
